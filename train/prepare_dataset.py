@@ -1,17 +1,25 @@
 import os
 import numpy as np
-from sklearn.model_selection import train_test_split
+import json
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(ROOT_DIR, "data", "raw_landmarks")
+PROCESSED_DIR = os.path.join(ROOT_DIR, "data", "processed")
+MODELS_DIR = os.path.join(ROOT_DIR, "models")
+
+os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 X = []
 y = []
 
-labels = sorted(os.listdir(DATA_DIR))
-label_map = {label: idx for idx, label in enumerate(labels)}
+# Load labels from labels.json
+with open(os.path.join(MODELS_DIR, "labels.json"), "r") as f:
+    gestures_dict = json.load(f)
 
-for label in labels:
+# gestures_dict will have string keys "0", "1" etc.
+label_map = {word: int(idx) for idx, word in gestures_dict.items()}
+
+for label in label_map.keys():
     folder = os.path.join(DATA_DIR, label)
 
     if not os.path.isdir(folder):
@@ -40,16 +48,10 @@ print("Dataset prepared")
 print("X shape:", X.shape)
 print("y shape:", y.shape)
 
-# split
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
+np.save(os.path.join(PROCESSED_DIR, "X.npy"), X)
+np.save(os.path.join(PROCESSED_DIR, "y.npy"), y)
 
-SAVE_DIR = os.path.join(ROOT_DIR, "data")
-
-np.save(os.path.join(SAVE_DIR, "X_train.npy"), X_train)
-np.save(os.path.join(SAVE_DIR, "X_test.npy"), X_test)
-np.save(os.path.join(SAVE_DIR, "y_train.npy"), y_train)
-np.save(os.path.join(SAVE_DIR, "y_test.npy"), y_test)
-
-print("\nSaved successfully!")
+print(f"Saved successfully to {PROCESSED_DIR}!")
+print("Mapped labels:")
+for k, v in label_map.items():
+    print(f"{v}: {k}")

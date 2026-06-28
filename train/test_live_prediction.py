@@ -5,6 +5,7 @@ import numpy as np
 import tensorflow as tf
 from PIL import Image, ImageDraw, ImageFont
 import time
+import json
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(ROOT_DIR)
@@ -21,7 +22,10 @@ model = tf.keras.models.load_model(
     os.path.join(ROOT_DIR, "models", "gesture_classifier.h5")
 )
 
-labels = sorted(os.listdir(os.path.join(ROOT_DIR, "data", "raw_landmarks")))
+with open(os.path.join(ROOT_DIR, "models", "labels.json"), "r") as f:
+    gestures_dict = json.load(f)
+# Reconstruct sorted list by integer key to ensure consistent ordering
+labels = [gestures_dict[str(i)] for i in range(len(gestures_dict))]
 
 tracker = HandTracker()
 sentence = SentenceBuilder()
@@ -40,9 +44,11 @@ while True:
     if not ret:
         break
 
+    frame = cv2.flip(frame, 1)
     landmarks = tracker.get_landmarks(frame)
 
     if landmarks is not None:
+        tracker.draw_landmarks(frame)
         landmarks = landmarks.reshape(1, -1)
         preds = model.predict(landmarks, verbose=0)[0]
         conf = np.max(preds)

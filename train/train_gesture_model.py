@@ -45,7 +45,8 @@ plt.title('Model Accuracy')
 plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
 plt.legend(['Train', 'Validation'])
-plt.show()
+plt.savefig(os.path.join(ROOT_DIR, "models", "accuracy.png"))
+plt.close()
 
 # =========================
 # LOSS GRAPH
@@ -57,5 +58,6 @@ plt.title('Model Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend(['Train', 'Validation'])
-plt.show()
+plt.savefig(os.path.join(ROOT_DIR, "models", "loss.png"))
+plt.close()
 

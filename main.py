@@ -3,11 +3,10 @@ import os
 import cv2
 import numpy as np
 import tensorflow as tf
-import tkinter as tk
-from tkinter import ttk
-from PIL import Image, ImageTk
+from PIL import Image
 import time
-
+import json
+import customtkinter as ctk
 
 ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(ROOT_DIR)
@@ -17,287 +16,179 @@ from utils.sentence_builder import SentenceBuilder
 from utils.motion_detector import MotionDetector
 from utils.tts import MarathiTTS
 
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-model = tf.keras.models.load_model(
-    os.path.join(ROOT_DIR, "models", "gesture_classifier.h5")
-)
-
-data_dir = os.path.join(ROOT_DIR, "data", "raw_landmarks")
-labels = sorted([f.strip().lower() for f in os.listdir(data_dir) if not f.startswith(".")])
-
-
-ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
-IMAGE_MAP = {}
-
-for file in os.listdir(ASSETS_DIR):
-    name, ext = os.path.splitext(file)
-    if ext.lower() in [".jpg", ".jpeg", ".png"]:
-        IMAGE_MAP[name.strip().lower()] = file
-
-
-tracker = HandTracker()
-sentence = SentenceBuilder()
-motion = MotionDetector()
-tts = MarathiTTS()
-
-cap = cv2.VideoCapture(0)
-
-CONF_THRESH = 0.80
-COOLDOWN_TIME = 1.5
-locked = False
-last_time = 0
-detection_active = True
-
-
-root = tk.Tk()
-root.title("Marathi Sign Language System")
-root.geometry("1350x820")
-root.configure(bg="#1e1e1e")
-
-style = ttk.Style()
-style.theme_use("clam")
-style.configure("TButton", font=("Segoe UI", 11), padding=6)
-style.configure("TEntry", padding=6)
-
-# ================= LAYOUT =================
-main_frame = tk.Frame(root, bg="#1e1e1e")
-main_frame.pack(fill="both", expand=True)
-
-left_frame = tk.Frame(main_frame, bg="#2b2b2b", width=420)
-left_frame.pack(side="left", fill="y")
-left_frame.pack_propagate(False)
-
-right_frame = tk.Frame(main_frame, bg="#1e1e1e")
-right_frame.pack(side="right", fill="both", expand=True)
-
-
-
-tk.Label(
-    left_frame,
-    text="Gesture Library",
-    font=("Segoe UI", 20, "bold"),
-    fg="white",
-    bg="#2b2b2b"
-).pack(pady=15)
-
-search_var = tk.StringVar()
-
-search_entry = ttk.Entry(
-    left_frame,
-    textvariable=search_var,
-    font=("Segoe UI", 12),
-    width=28
-)
-search_entry.pack(pady=5)
-
-dropdown_container = tk.Frame(left_frame, bg="#2b2b2b", height=0)
-dropdown_container.pack(fill="x")
-dropdown_container.pack_propagate(False)
-
-listbox = tk.Listbox(
-    dropdown_container,
-    font=("Segoe UI", 11),
-    height=6,
-    activestyle="none",
-    bg="#1e1e1e",
-    fg="white",
-    selectbackground="#00aa88"
-)
-listbox.pack(fill="both", expand=True)
-
-dropdown_open = False
-current_height = 0
-max_height = 160
-
-def animate_dropdown(opening=True):
-    global current_height, dropdown_open
-    step = 20
-
-    if opening:
-        if current_height < max_height:
-            current_height += step
-            dropdown_container.config(height=current_height)
-            root.after(8, lambda: animate_dropdown(True))
+class SignLanguageApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("Marathi Sign Language Translator")
+        self.geometry("1100x700")
+        
+        # Load backend
+        self.model = tf.keras.models.load_model(os.path.join(ROOT_DIR, "models", "gesture_classifier.h5"))
+        with open(os.path.join(ROOT_DIR, "models", "labels.json"), "r") as f:
+            gestures_dict = json.load(f)
+        self.labels = [gestures_dict[str(i)] for i in range(len(gestures_dict))]
+        
+        self.tracker = HandTracker()
+        self.sentence = SentenceBuilder()
+        self.motion = MotionDetector()
+        self.tts = MarathiTTS()
+        
+        self.locked = False
+        self.cooldown_time = 1.5
+        self.last_time = 0
+        self.CONF_THRESH = 0.80
+        self.active_detection = False
+        
+        self.cap = cv2.VideoCapture(0)
+        
+        self.build_ui()
+        
+        # Start video loop
+        self.update_video()
+        
+    def build_ui(self):
+        # Configure grid layout
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0, minsize=400) # Fixed width for right panel
+        self.grid_rowconfigure(0, weight=1)
+        
+        # --- LEFT PANEL (Video) ---
+        self.video_frame = ctk.CTkFrame(self, corner_radius=15)
+        self.video_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        
+        self.video_label = ctk.CTkLabel(self.video_frame, text="")
+        self.video_label.pack(expand=True, fill="both", padx=10, pady=10)
+        
+        # --- RIGHT PANEL (Controls & Text) ---
+        self.control_frame = ctk.CTkFrame(self, corner_radius=15, fg_color="#1E1E1E", width=400)
+        self.control_frame.grid(row=0, column=1, padx=(0, 20), pady=20, sticky="nsew")
+        self.control_frame.grid_propagate(False) # Stop panel from expanding/moving
+        
+        # Context Indicator
+        self.context_label = ctk.CTkLabel(self.control_frame, text="Context: Daily Routine", 
+                                        font=ctk.CTkFont(size=14, weight="bold"), text_color="#00FFAA")
+        self.context_label.pack(pady=(20, 0))
+        
+        # Final Sentence
+        self.sentence_label = ctk.CTkLabel(self.control_frame, text="Press 'Start Sentence' to begin", 
+                                         font=ctk.CTkFont(family="Nirmala UI", size=36, weight="bold"), 
+                                         text_color="#FFFFFF", wraplength=350, justify="center")
+        self.sentence_label.pack(expand=True, fill="both", pady=10, padx=20)
+        
+        # Buttons
+        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Sentence", 
+                                     fg_color="#28A745", hover_color="#218838",
+                                     height=50, font=ctk.CTkFont(size=16, weight="bold"),
+                                     command=self.start_sentence)
+        self.btn_start.pack(fill="x", padx=30, pady=10)
+        
+        self.btn_complete = ctk.CTkButton(self.control_frame, text="Sentence Completed", 
+                                        fg_color="#007BFF", hover_color="#0069D9",
+                                        height=50, font=ctk.CTkFont(size=16, weight="bold"),
+                                        command=self.complete_sentence)
+        self.btn_complete.pack(fill="x", padx=30, pady=10)
+        
+        self.btn_speak = ctk.CTkButton(self.control_frame, text="Speak Audio", 
+                                     fg_color="#6F42C1", hover_color="#5A32A3",
+                                     height=50, font=ctk.CTkFont(size=16, weight="bold"),
+                                     command=self.speak_audio)
+        self.btn_speak.pack(fill="x", padx=30, pady=10)
+        
+        self.btn_reset = ctk.CTkButton(self.control_frame, text="Reset Sentence", 
+                                     fg_color="#DC3545", hover_color="#C82333",
+                                     height=50, font=ctk.CTkFont(size=16, weight="bold"),
+                                     command=self.reset_sentence)
+        self.btn_reset.pack(fill="x", padx=30, pady=(10, 30))
+        
+    def start_sentence(self):
+        self.sentence.reset()
+        self.active_detection = True
+        self.update_ui_text()
+        
+    def complete_sentence(self):
+        self.active_detection = False
+        
+    def speak_audio(self):
+        txt = self.sentence.get_sentence()
+        if txt and txt != "...":
+            self.tts.speak(txt)
+            
+    def reset_sentence(self):
+        self.sentence.reset()
+        self.active_detection = False
+        self.update_ui_text()
+            
+    def update_ui_text(self):
+        ctx = self.sentence.context_manager.get_display_name()
+        sent = self.sentence.get_sentence()
+        
+        self.context_label.configure(text=f"Context: {ctx}")
+        if self.active_detection:
+            self.sentence_label.configure(text=sent if sent else "Listening...")
         else:
-            dropdown_open = True
-    else:
-        if current_height > 0:
-            current_height -= step
-            dropdown_container.config(height=current_height)
-            root.after(8, lambda: animate_dropdown(False))
-        else:
-            dropdown_open = False
+            self.sentence_label.configure(text=sent if sent else "Press 'Start Sentence' to begin")
+        
+    def update_video(self):
+        ret, frame = self.cap.read()
+        if ret:
+            frame = cv2.flip(frame, 1)
+            
+            if self.active_detection:
+                landmarks = self.tracker.process_frame(frame)
+                if landmarks is not None:
+                    self.tracker.draw_landmarks(frame)
+                    l_arr = np.array(landmarks).reshape(1, -1)
+                    
+                    # Normalize
+                    mean = l_arr.mean()
+                    std = l_arr.std()
+                    if std > 0:
+                        l_arr = (l_arr - mean) / std
+                        
+                    preds = self.model.predict(l_arr, verbose=0)[0]
+                    conf = np.max(preds)
+                    word = self.labels[np.argmax(preds)]
+                    
+                    static = self.motion.is_static(landmarks)
+                    
+                    if static and conf > self.CONF_THRESH and not self.locked:
+                        self.sentence.add(word)
+                        self.last_time = time.time()
+                        self.locked = True
+                        self.update_ui_text()
+                        
+                    if self.locked and (time.time() - self.last_time) > self.cooldown_time:
+                        self.locked = False
+                        
+                    # Draw word on frame
+                    cv2.putText(frame, f"{word} ({conf:.2f})", 
+                               (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 
+                               1, (0, 255, 0), 2)
+            
+            # Convert frame for Tkinter
+            cv2image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(cv2image)
+            # Resize image to fit label
+            w = self.video_label.winfo_width()
+            h = self.video_label.winfo_height()
+            if w > 10 and h > 10:
+                img = img.resize((w, h), Image.Resampling.LANCZOS)
+                
+            imgtk = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
+            self.video_label.configure(image=imgtk)
+            self.video_label.image = imgtk
+            
+        self.after(10, self.update_video)
+        
+    def on_closing(self):
+        self.cap.release()
+        self.destroy()
 
-def toggle_dropdown(event=None):
-    if dropdown_open:
-        animate_dropdown(False)
-    else:
-        update_list()
-        animate_dropdown(True)
-
-def update_list(event=None):
-    typed = search_var.get().strip().lower()
-    listbox.delete(0, tk.END)
-    for word in labels:
-        if typed in word:
-            listbox.insert(tk.END, word)
-
-search_entry.bind("<Button-1>", toggle_dropdown)
-search_entry.bind("<KeyRelease>", update_list)
-
-
-preview_label = tk.Label(
-    left_frame,
-    text="Select a gesture",
-    font=("Segoe UI", 14, "bold"),
-    fg="#00ffcc",
-    bg="#2b2b2b"
-)
-preview_label.pack(pady=10)
-
-gesture_image_label = tk.Label(left_frame, bg="#2b2b2b")
-gesture_image_label.pack(pady=10)
-
-def show_gesture(word):
-    word = word.strip().lower()
-
-    if word in IMAGE_MAP:
-        img_path = os.path.join(ASSETS_DIR, IMAGE_MAP[word])
-
-        img = Image.open(img_path)
-        img = img.resize((330, 330))
-        img_tk = ImageTk.PhotoImage(img)
-
-        gesture_image_label.imgtk = img_tk
-        gesture_image_label.configure(image=img_tk)
-        preview_label.config(text=f"Preview: {word}")
-    else:
-        preview_label.config(text=f"No image mapped for '{word}'")
-        gesture_image_label.configure(image="")
-        gesture_image_label.imgtk = None
-
-def on_select(event):
-    selection = listbox.curselection()
-    if selection:
-        word = listbox.get(selection[0])
-        search_var.set(word)
-        show_gesture(word)
-        animate_dropdown(False)
-
-listbox.bind("<<ListboxSelect>>", on_select)
-
-
-
-video_label = tk.Label(right_frame, bg="#1e1e1e")
-video_label.pack(pady=10)
-
-sentence_label = tk.Label(
-    right_frame,
-    text="",
-    font=("Segoe UI", 26),
-    fg="#00ff88",
-    bg="#1e1e1e"
-)
-sentence_label.pack(pady=10)
-
-status_label = tk.Label(
-    right_frame,
-    text="Detecting...",
-    font=("Segoe UI", 14),
-    fg="yellow",
-    bg="#1e1e1e"
-)
-status_label.pack()
-
-confidence_label = tk.Label(
-    right_frame,
-    text="",
-    font=("Segoe UI", 12),
-    fg="cyan",
-    bg="#1e1e1e"
-)
-confidence_label.pack()
-
-btn_frame = tk.Frame(right_frame, bg="#1e1e1e")
-btn_frame.pack(pady=15)
-
-def speak_sentence():
-    text = sentence.get_sentence()
-    if text.strip():
-        tts.speak(text)
-
-def complete_sentence():
-    global detection_active
-    detection_active = False
-    status_label.config(text="Sentence Completed.", fg="red")
-
-def start_new_sentence():
-    global detection_active
-    sentence.reset()
-    sentence_label.config(text="")
-    detection_active = True
-    status_label.config(text="Detecting...", fg="yellow")
-
-ttk.Button(btn_frame, text="Speak", command=speak_sentence).grid(row=0, column=0, padx=10)
-ttk.Button(btn_frame, text="Sentence Complete", command=complete_sentence).grid(row=0, column=1, padx=10)
-ttk.Button(btn_frame, text="Start New Sentence", command=start_new_sentence).grid(row=0, column=2, padx=10)
-
-
-
-def update_frame():
-    global locked, last_time
-
-    ret, frame = cap.read()
-    if not ret:
-        root.after(15, update_frame)
-        return
-
-    display_conf = ""
-
-    if detection_active:
-        landmarks = tracker.get_landmarks(frame)
-
-        if landmarks is not None:
-            static = motion.is_static(landmarks)
-
-            input_landmarks = landmarks.reshape(1, -1)
-            preds = model.predict(input_landmarks, verbose=0)[0]
-
-            conf = float(np.max(preds))
-            word = labels[np.argmax(preds)]
-
-            display_conf = f"{word} ({conf:.2f})"
-
-            if static and conf > CONF_THRESH and not locked:
-                sentence.add(word)
-                show_gesture(word)
-                last_time = time.time()
-                locked = True
-
-            if locked and (time.time() - last_time) > COOLDOWN_TIME:
-                locked = False
-
-    sentence_label.config(text=sentence.get_sentence())
-    confidence_label.config(text=display_conf)
-
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_rgb = cv2.resize(frame_rgb, (750, 500))
-
-    img = Image.fromarray(frame_rgb)
-    imgtk = ImageTk.PhotoImage(img)
-    video_label.imgtk = imgtk
-    video_label.configure(image=imgtk)
-
-    root.after(15, update_frame)
-
-
-
-def on_closing():
-    cap.release()
-    cv2.destroyAllWindows()
-    root.destroy()
-
-root.protocol("WM_DELETE_WINDOW", on_closing)
-
-update_frame()
-root.mainloop()
+if __name__ == "__main__":
+    app = SignLanguageApp()
+    app.protocol("WM_DELETE_WINDOW", app.on_closing)
+    app.mainloop()
